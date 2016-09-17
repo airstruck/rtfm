@@ -110,7 +110,7 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
         ['function'] = true, ['thread'] = true, ['userdata'] = true }
 @>
 
-<@ define('list', 'name', function (tag, index) @>
+<@ define('list', 'name', function (tag) @>
     <@= tag.name @>
 <@ end) @>
 
@@ -187,7 +187,6 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
     <article>
         <@ if tag.type or tag.typename then @>
             <h<@= tag.level + 1 @>>
-                <@ -- link(tag) @>
                 <@ defer(tag, 'link') @>
             </h<@= tag.level + 1 @>>
         <@ end @>
