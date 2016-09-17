@@ -98,17 +98,46 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
 .primitive { color: #999; }
 </style></head><body>
 <@
-local typenames = {}
-for _, tag in ipairs(tags.flat) do
-    if tag.typename then typenames[tag.typename] = tag end
-end
-local primitives = { ['nil'] = true, ['number'] = true, ['string'] = true,
-    ['boolean'] = true, ['table'] = true, ['function'] = true,
-    ['thread'] = true, ['userdata'] = true }
-local idMap = {}
-local function link (tag)
-    if tag.type then
-        write('<span class="type">')
+    local idMap = {}
+    local typenames = {}
+
+    for _, tag in ipairs(tags.flat) do
+        if tag.typename then typenames[tag.typename] = tag end
+    end
+
+    local primitives = { ['nil'] = true, ['number'] = true,
+        ['string'] = true, ['boolean'] = true, ['table'] = true,
+        ['function'] = true, ['thread'] = true, ['userdata'] = true }
+@>
+
+<@ define('list', 'name', function (tag, index) @>
+    <@= tag.name @>
+<@ end) @>
+
+<@ define('list', 'name and prev and prev.id == id', function (tag) @>
+    , <@= ' ' .. tag.name @>
+<@ end) @>
+
+<@ define('overview', 'typename', function (tag) @>
+    <li>
+        <a href="#<@= tag.typename @>"><@= tag.typename @></a>
+        <p><@= tag.info @></p>
+        <ul><@ descend(tag, 'overview') @></ul>
+    </li>
+<@ end) @>
+
+<@ define('overview', 'typename and parametric', function (tag) @>
+    <li>
+        <a href="#<@= tag.typename @>"><@= tag.typename @></a>
+        <i>(<@ descend(tag, 'list', 'id=="param"') @>)</i>
+        <p><@= tag.info @></p>
+        <ul><@ descend(tag, 'overview') @></ul>
+    </li>
+<@ end) @>
+
+<@ define('type', 'type', function (tag) @>
+    <span class="type">
+    <@ 
         for m1, m2, m3 in tag.type:gmatch('([^%a]?)([%a]+)(.?)') do
             if typenames[m2] then
                 write(m1 .. '<a href="#' .. m2 .. '">'
@@ -121,87 +150,89 @@ local function link (tag)
                     .. m2 .. '</span>' .. m3)
             end
         end
-        write('</span> ')
-    end
-    if tag.name then
-        write('<b>' .. tag.name .. '</b> ')
-    end
-    if tag.typename then
+    @>
+    </span>
+<@ end) @>
+
+<@ define('typename', 'typename', function (tag) @>
+    <@
         local id = ''
         if not idMap[tag.typename] and tag.level < 4 then
             id = ' id="' .. tag.typename .. '"'
             idMap[tag.typename] = tag
         end
         write('<b' .. id .. '>' .. tag.typename .. '</b> ')
-    end
-    if not tag.parametric then
-        return
-    end
-    local hasParam = false
-    write('(')
-    for index, child in ipairs(tag) do
-        if child.id == 'param' then
-            if hasParam then 
-                write(', ')
-            end
-            write('<var>' .. child.name .. '</var>')
-            hasParam = true
-        end
-    end
-    write(')')
-end
-@>
-<@ if self.index then @>
+    @>
+<@ end) @>
+
+<@ define('link', 'type', function (tag) @>
+    <@ defer(tag, 'type') @>
+<@ end) @>
+
+<@ define('link', 'type and name', function (tag) @>
+    <@ defer(tag, 'type') @>
+    <b><@= ' ' .. tag.name @></b>
+<@ end) @>
+
+<@ define('link', 'typename', function (tag) @>
+    <@ defer(tag, 'typename') @>
+<@ end) @>
+
+<@ define('link', 'typename and parametric', function (tag) @>
+    <@ defer(tag, 'typename') @>
+    (<@ descend(tag, 'list', 'id=="param"') @>)
+<@ end) @>
+
+<@ define('article', function (tag) @>
+    <article>
+        <@ if tag.type or tag.typename then @>
+            <h<@= tag.level + 1 @>>
+                <@ -- link(tag) @>
+                <@ defer(tag, 'link') @>
+            </h<@= tag.level + 1 @>>
+        <@ end @>
+        <div>
+            <@ if tag.note then @><p><@= tag.note @></p><@ end @>
+            <@ if tag.code then @>
+                <pre><code><@= tag.info @></code></pre>
+            <@ else @>
+                <p><@= tag.info @></p>
+            <@ end @>
+            <@ descend(tag, 'main') @>
+        </div>
+    </article>
+<@ end) @>
+
+<@ define('main', function (tag) @>
+    <@ defer(tag, 'article') @>
+<@ end) @>
+
+<@ define('main', '(prev and prev.id) ~= id', function (tag) @>
+    <section>
+        <h<@= tag.level + 1 @>>
+            <@= tag.title or tag.id @>
+        </h<@= tag.level + 1 @>>
+        <@ defer(tag, 'article') @>
+    </section>
+<@ end) @>
+
+<@ define('main', 'level == 1', function (tag) @>
+    <section>
+        <@ defer(tag, 'article') @>
+    </section>
+<@ end) @>
+
+<@ if self.overview then @>
     <div>
         <h1><@= self.title @></h1>
         <nav><h3>Table of Contents</h3>
-            <@ local lastTag = {} for _, tag in ipairs(tags) do @>
-                <@ if tag.id ~= lastTag.id then @>
-                    <@ if lastTag.id then @></dl></section><@ end @>
-                    <section><h4><@= tag.title or tag.id @></h4>
-                <@ end @>
-                <a href="#<@= tag.typename @>"><@= tag.typename @></a>
-                <p><@= tag.info @></p>
-            <@ lastTag = tag end @>
-            <@ if lastTag.id then @></section><@ end @>
+        <ul><@ descend(tags, 'overview') @></ul>
         </nav>
     </div>
 <@ end @>
-<@
-local function dump (tags)
-    for index, tag in ipairs(tags) do 
-        local lastTag = tags[index - 1] or {}
-        local nextTag = tags[index + 1] or {} @>
-        <@ if tag.id ~= lastTag.id then @>
-            <section>
-            <h<@= tag.level + 1 @>>
-                <@= tag.title or tag.id @>
-            </h<@= tag.level + 1 @>>
-        <@ end @>
-        <article>
-            <@ if tag.type or tag.typename then @>
-                <h<@= tag.level + 1 @>>
-                    <@ link(tag) @>
-                </h<@= tag.level + 1 @>>
-            <@ end @>
-            <div>
-                <@ if tag.note then @><p><@= tag.note @></p><@ end @>
-                <@ if tag.code then @>
-                    <pre><code><@= tag.info @></code></pre>
-                <@ else @>
-                    <p><@= tag.info @></p>
-                <@ end @>
-                <@ if #tag > 0 then @>
-                    <@ dump(tag) @>
-                <@ end @>
-            </div>
-        </article>
-        <@ if nextTag.id ~= tag.id then @>
-            </section>
-        <@ end @>
-    <@ end 
-end
-dump(tags) @>
+
+<@ descend(tags, 'main') @>
+
 <footer>
     Documentation generated by
     <a href="about:blank">RTFM</a>.
@@ -314,11 +345,21 @@ local function nestTags (self, tags)
     table.sort(tags, self.sortTags)
 end
 
+--- @method Generator:linkTags   Link tags to next/prevous siblings. 
+local function linkTags (self, tags)
+    for i, tag in ipairs(tags) do
+        tag.prev = tags[i - 1]
+        tag.next = tags[i + 1]
+        self:linkTags(tag)
+    end
+end
+
 --- @method Generator:run   Run the generator on a list of files.
 --- @param {number:string} files   A table of source files to parse.
 local function run (self, files)
     local tags = self.input:read(files)
     self:nestTags(tags)
+    self:linkTags(tags)
     local text = self.template:apply(tags)
     self.output:write(text)
 end
@@ -342,6 +383,7 @@ function rtfm.Generator (configure)
     
     generator.sortTags = sortTags
     generator.nestTags = nestTags
+    generator.linkTags = linkTags
     generator.run = run
     
     if configure then
@@ -356,6 +398,46 @@ function rtfm.Generator (configure)
     return generator
 end
 
+--- @class NodeSet  Internal template transformation helper.
+
+--- @method NodeSet:test   Test a node to see if it meets a condition.
+--- @param table node   The node to test.
+--- @param string condition   The condition to check.
+--- @return mixed  Returns a truthy value if the test passed.
+local function test (self, node, condition)
+    local env = setmetatable({}, { __index = node })
+    local f = assert((loadstring or load)(
+        'local self = ... return ' .. condition, nil, 't', env))
+    return (setfenv and setfenv(f, env) or f)(node)
+end
+
+--- @method NodeSet:match   Test a node to see if it meets a condition.
+--- @param string condition   The condition to check.
+--- @param boolean descend   Whether to descend into child nodes.
+--- @return NodeSet   Returns a new NodeSet containing matched nodes.
+local function match (self, condition, descend)
+    local ns = rtfm.NodeSet()
+    condition = condition or 'true'
+    for _, node in ipairs(self) do
+        if descend then
+            for _, child in ipairs(node) do
+                if self:test(child, condition) then
+                    ns[#ns + 1] = child
+                end
+            end
+        elseif self:test(node, condition) then
+            ns[#ns + 1] = node
+        end
+    end
+    return ns
+end
+
+--- @constructor rtfm.NodeSet   Creates a NodeSet instance.
+--- @param table ... A list of nodes in the set.
+function rtfm.NodeSet (...)
+    return { test = test, match = match, ... }
+end
+
 --- @class Template   The default template.
 
 --- @method Template:applyText   Apply the template.
@@ -366,16 +448,21 @@ local function applyText (self, text, tags)
     local close = ']============]\n'
     if self.condense then
         local s, e, left, right = self.escapePattern:find('(.*)%(.*%)(.*)')
-        text = text:gsub(right .. '[%s]+' .. left, right .. left) 
+        text = text:gsub('[%s]*' .. left, left):gsub(right .. '[%s]*', right) 
     end
-    local source = 'local self, tags, write = ... ' .. open .. text
+    local source = 'local self, tags, write, define, defer, descend = ... '
+        .. open .. text
         :gsub(self.outputPattern, close .. 'write(%1\n)' .. open)
         :gsub(self.escapePattern, close .. '%1' .. open)
         .. close
     local func, reason = loadstring(source)
     if func then
         local buffer = {}
-        func(self, tags, function (text) buffer[#buffer + 1] = text end)
+        func(self, tags,
+            function (text) buffer[#buffer + 1] = text end,
+            function (...) return self:define(...) end,
+            function (...) return self:delegate(false, ...) end,
+            function (...) return self:delegate(true, ...) end)
         return table.concat(buffer)
     else
         return nil, reason
@@ -406,6 +493,40 @@ local function apply (self, tags)
     end
 end
 
+--- @method Template:define   Define a transformation rule.
+--- @param string mode   Transformation mode.
+--- @param string selector   Node selector.
+--- @param function transform   Transformation callback function.
+local function define (self, mode, selector, transform)
+    self.rules[#self.rules + 1] = {
+        mode = mode,
+        selector = transform and selector or 'true',
+        transform = transform or selector
+    }
+end
+
+--- @method Template:delegate   Delegate to another transformation rule.
+--- @param string context   Context node.
+--- @param string mode   Transformation mode.
+--- @param string selector   Node selector.
+local function delegate (self, descend, node, mode, selector)
+    local context = rtfm.NodeSet(node):match(selector, descend)
+    local map = {}
+    for _, rule in ipairs(self.rules) do
+        if rule.mode == mode then
+            local matches = context:match(rule.selector, false)
+            for _, node in ipairs(matches) do
+                map[node] = rule
+            end
+        end
+    end
+    for index, node in ipairs(context) do
+        if map[node] then
+            map[node].transform(node, index, context)
+        end
+    end
+end
+
 --- @constructor rtfm.Template   Creates a Template instance.
 function rtfm.Template ()
     local template = {}
@@ -415,17 +536,21 @@ function rtfm.Template ()
     template.path = nil
     --- @field string text   Full text of the output template.
     template.text = DEFAULT_TEMPLATE
-    --- @field boolean index   Whether to display an index (table of contents).
-    template.index = true
+    --- @field boolean overview   Whether to display an API overview.
+    template.overview = true
     --- @field string escapePattern   Pattern to escape Lua code.
     template.escapePattern = '<@(.-)@>'
     --- @field string outputPattern   Pattern to output results of expressions.
     template.outputPattern = '<@=(.-)@>'
-    --- @field boolean condense   Eliminate whitespace between escape sequences.
+    --- @field boolean condense   Eliminate whitespace around escape sequences.
+    --- Whitespace may be explicitly written with `write` or `outputPattern`. 
     template.condense = true
     
+    template.rules = {}
     template.apply = apply
     template.applyText = applyText
+    template.define = define
+    template.delegate = delegate
     
     return template
 end
@@ -526,9 +651,8 @@ end
 
 --- @class Writer   Outputs the generated text.
 
---- @method Writer:write   Outputs some text to a file or stdout.
---- @param {number:string} files   List of files to parse.
---- @return {number:TagDef}   Returns a list of extracted tags.
+--- @method Writer:write   Write to a file or stdout.
+--- @param string text   Text (or binary) to write.
 local function write (self, text)
     if self.path then
         local file = io.open(self.path, 'wb')
