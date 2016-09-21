@@ -638,7 +638,7 @@ function rtfm.Reader (generator)
     --- @field string sigil   The prefix character for tags; "@" by default.
     reader.sigil = '@'
     --- @field string blockStartPattern   Matches the start of a docblock.
-    reader.blockStartPattern = '%-%-%[%=*[%-%-+'
+    reader.blockStartPattern = '%-%-%[=*%[%-%-+'
     --- @field string blockEndPattern   Matches the end of a docblock.
     reader.blockEndPattern = '%-*%]=*%]'
     --- @field string linePattern   Matches a line with a docblock.
