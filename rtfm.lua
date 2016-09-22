@@ -7,7 +7,7 @@ local TWO_WORD = '([^%s]+)%s*([^%s]*)%s*(.*)'
 
 local CREATE_DEFAULT_TAGDEFS = function ()
     return {
-        ['file'] = { level = 1, group = 11, title = 'Files',
+        ['file'] = { level = 1, group = 11, title = 'Files', merge = 'typename',
             pattern = ONE_WORD, fields = 'typename,info', sort = 'typename' },
         ['module'] = { alias = 'file',
             title = 'Modules', group = 12 },
@@ -27,7 +27,7 @@ local CREATE_DEFAULT_TAGDEFS = function ()
             pattern = TWO_WORD, fields = 'type,name,info', sort = 'name' },
         ['function'] = { level = 3, group = 33, title = 'Functions',
             pattern = ONE_WORD, fields = 'typename,info', sort = 'typename',
-            parametric = true },
+            parametric = true, },
         ['constructor'] = { alias = 'function',
             title = 'Constructors', group = 32 },
         ['method'] = { alias = 'function',
@@ -202,11 +202,11 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
     </article>
 <@ end) @>
 
-<@ define('main', function (tag) @>
+<@ define('main', 'not hidden', function (tag) @>
     <@ defer(tag, 'article') @>
 <@ end) @>
 
-<@ define('main', '(prev and prev.id) ~= id', function (tag) @>
+<@ define('main', '(prev and prev.id) ~= id and not hidden', function (tag) @>
     <section>
         <h<@= tag.level + 1 @>>
             <@= tag.title or tag.id @>
@@ -215,7 +215,7 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
     </section>
 <@ end) @>
 
-<@ define('main', 'level == 1', function (tag) @>
+<@ define('main', 'level == 1 and not hidden', function (tag) @>
     <section>
         <@ defer(tag, 'article') @>
     </section>
@@ -307,11 +307,20 @@ end
 local function nestTags (self, tags)
     local levels = {}
     local i = 0
-    tags.flat = {}
     while i < #tags do
         i = i + 1
         local tag = tags[i]
-        tags.flat[#tags.flat + 1] = tag
+        local isMerged = false
+        if tag.merge then
+            for _, other in ipairs(tags.flat) do
+                if other[tag.merge] == tag[tag.merge]
+                and other.id == tag.id then
+                    isMerged = other ~= tag
+                    tag = other
+                    break
+                end
+            end
+        end
         if levels[tag.level] then
             table.sort(levels[tag.level], self.sortTags)
         end
@@ -331,9 +340,12 @@ local function nestTags (self, tags)
             parent = levels[level]
             level = level - 1
         end
-        if parent then
+        if parent and not isMerged then
             tag.parent = parent
             parent[#parent + 1] = tag
+            table.remove(tags, i)
+            i = i - 1
+        elseif isMerged then
             table.remove(tags, i)
             i = i - 1
         end
@@ -580,11 +592,13 @@ local function parseLine (self, line)
             tag[field] = m[i]
         end
         tags[#tags + 1] = tag
+        tags.flat[#tags.flat + 1] = tag
         tag.index = #tags
         tag.column = column
         tag.data = data
         tag.id = id
         tag.info = tag.info or ''
+        return tag
     -- it's more info for the previous tag
     elseif lastTag then
         local left = line:sub(1, lastTag.column - 1)
@@ -633,7 +647,7 @@ function rtfm.Reader (generator)
     local reader = {}
     
     reader.generator = generator
-    reader.tags = {}
+    reader.tags = { flat = {} }
     
     --- @field string sigil   The prefix character for tags; "@" by default.
     reader.sigil = '@'
