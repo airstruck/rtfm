@@ -1,4 +1,84 @@
---- @module rtfm   Read the fucking manual.
+--[=[--
+@module rtfm   Read the fucking manual.
+
+@env Configuration Environment
+
+This script can be configured by command switches and a config file.
+
+Configuration options can be specified with command line switches.
+They should appear before the list of soure files being processed.
+
+    lua rtfm.lua --template.title='My API Docs' myapi.lua
+
+A *config file* is a file named `.rtfm.lua` in the current working directory.
+Command line switches always override config file settings.
+
+```lua
+-- .rtfm.lua
+template.title = 'My API Docs'
+```
+
+The configuration environment runs as an instance of `Generator`;
+all members can be accessed as locals. This allows almost every
+aspect of RTFM to be configured; even core functionality can be
+monkey-patched from the config file.
+
+@env Custom Template Environment
+
+Custom templates generate documentation from a list of tags.
+
+Set a custom template with the `template.text` or `template.path`
+configuration options.
+
+### Command line:
+
+    lua rtfm.lua --template.path='mytemplate.html' src.lua > out.html
+
+### Config file:
+
+```lua
+template.path='mytemplate.html'
+-- or
+template.text=[[ ... ]]
+```
+
+The custom template environment has access to these locals:
+
+@field Template self   The `Template` object.
+
+@field {number:TagDef} tags   List of tags to apply the template to.
+
+@function write   Append text to output.
+@param string text   Text to write.
+
+@function define   Define a transformation rule.
+@param string mode   Transformation mode.
+@param string selector   Optional node selector.
+@param function transform   Transformation callback function.
+
+@function defer   Defer to another transformation rule.
+@param string context   Context node.
+@param string mode   Transformation mode.
+@param string selector   Node selector.
+
+@function descend   Descend into child nodes and defer.
+@param string context   Context node.
+@param string mode   Transformation mode.
+@param string selector   Node selector.
+
+@type TagDef
+
+@field number level     Tag level. Lower levels are parents of higher levels.
+@field number group     Group priority level. Lower groups come first.
+@field string sort      The name of a field to sort by after grouping.
+@field string pattern   Matching pattern. Captures are inserted into fields.
+@field string fields    Comma-delimited list of fields to populate from pattern.
+@field string alias     The name of another `TagDef` to inherit from.
+@field string title     A name to display in the template for this tag.
+@field boolean parametric   Whether to display a parameter list overview.
+
+@end type
+--]=]--
 local rtfm = {}
 
 local ALL = '(.*)'
@@ -8,26 +88,31 @@ local TWO_WORD = '([^%s]+)%s*([^%s]*)%s*(.*)'
 local CREATE_DEFAULT_TAGDEFS = function ()
     return {
         ['file'] = { level = 1, group = 11, title = 'Files', merge = 'typename',
-            pattern = ONE_WORD, fields = 'typename,info', sort = 'typename' },
+            pattern = ONE_WORD, fields = 'typename,info', sort = 'typename',
+            nest = rtfm.nestMergedTag },
         ['module'] = { alias = 'file',
             title = 'Modules', group = 12 },
         ['script'] = { alias = 'file',
             title = 'Scripts', group = 13 },
         ['type'] = { level = 2, group = 29, title = 'Types',
-            pattern = ONE_WORD, fields = 'typename,info', sort = 'typename' },
+            pattern = ONE_WORD, fields = 'typename,info', sort = 'typename',
+            nest = rtfm.nestDocTag },
+        ['env'] = { alias = 'type',
+            pattern = ALL, title = 'Contexts', group = 21 },
         ['class'] = { alias = 'type',
-            title = 'Classes', group = 21 },
+            title = 'Classes', group = 22 },
         ['object'] = { alias = 'type',
-            title = 'Objects', group = 22 },
+            title = 'Objects', group = 23 },
         ['table'] = { alias = 'type',
-            title = 'Tables', group = 23 },
+            title = 'Tables', group = 24 },
         ['interface'] = { alias = 'type',
-            title = 'Interfaces', group = 24 },
+            title = 'Interfaces', group = 25 },
         ['field'] = { level = 3, group = 31, title = 'Fields',
-            pattern = TWO_WORD, fields = 'type,name,info', sort = 'name' },
+            pattern = TWO_WORD, fields = 'type,name,info', sort = 'name',
+            nest = rtfm.nestDocTag },
         ['function'] = { level = 3, group = 33, title = 'Functions',
             pattern = ONE_WORD, fields = 'typename,info', sort = 'typename',
-            parametric = true, },
+            parametric = true, nest = rtfm.nestDocTag },
         ['constructor'] = { alias = 'function',
             title = 'Constructors', group = 32 },
         ['method'] = { alias = 'function',
@@ -37,22 +122,24 @@ local CREATE_DEFAULT_TAGDEFS = function ()
         ['continue'] = { alias = 'function',
             title = 'Continuations', group = 36 },
         ['param'] = { level = 4, title = 'Arguments',
-            pattern = TWO_WORD, fields = 'type,name,info' },
+            pattern = TWO_WORD, fields = 'type,name,info',
+            nest = rtfm.nestDocTag },
         ['return'] = { level = 4, title = 'Returns',
-            pattern = ONE_WORD, fields = 'type,info' },
-        ['example'] = { level = 4, title = 'Examples',
-            pattern = ALL, fields = 'note',
-            code = true },
-        ['synopsis'] = { alias = 'example',
-            title = 'Synopsis', fields = 'info' },
+            pattern = ONE_WORD, fields = 'type,info',
+            nest = rtfm.nestDocTag },
         ['unknown'] = { level = 4, pattern = TWO_WORD,
-            fields = 'type,name,info' },
+            fields = 'type,name,info', nest = rtfm.nestDocTag },
+        ['end'] = { pattern = ALL, fields = 'what',
+            nest = rtfm.nestEndTag },
     }
 end
 
 local DEFAULT_TEMPLATE = [[<!doctype html>
 <html><head><meta charset="utf-8">
 <title><@= self.title @></title>
+<@ local cdn = 'https://cdnjs.cloudflare.com/ajax/libs' @>
+<link rel="stylesheet"
+    href="<@= cdn @>/highlight.js/9.7.0/styles/default.min.css">
 <style>
 html, body { background-color:#666; color:#333; font-size:12px;
     margin:0; padding:0; font-family:Lucida Grande, Lucida Sans Unicode,
@@ -71,7 +158,7 @@ section > h3 { display:none; }
 section > h4 { color:#aaa; font-style:italic; font-size:130%; margin:8px 0; }
 section > h5 { font-weight:bold; color:#999; margin:8px 0}
 a { color:#39c; text-decoration:none; }
-p { line-height:150%; }
+p { line-height:150%; margin: 1em 0; }
 :target { text-decoration:underline; }
 article > h2 { font-size:200%; }
 article > h3 { font-size:140%; background:#ddd;
@@ -121,16 +208,7 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
 <@ define('overview', 'typename', function (tag) @>
     <li>
         <a href="#<@= tag.typename @>"><@= tag.typename @></a>
-        <p><@= tag.info @></p>
-        <ul><@ descend(tag, 'overview') @></ul>
-    </li>
-<@ end) @>
-
-<@ define('overview', 'typename and parametric', function (tag) @>
-    <li>
-        <a href="#<@= tag.typename @>"><@= tag.typename @></a>
-        <i>(<@ descend(tag, 'list', 'id=="param"') @>)</i>
-        <p><@= tag.info @></p>
+        <p><@= tag.info:gsub('%..*', '.') @></p>
         <ul><@ descend(tag, 'overview') @></ul>
     </li>
 <@ end) @>
@@ -138,7 +216,7 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
 <@ define('type', 'type', function (tag) @>
     <span class="type">
     <@ 
-        for m1, m2, m3 in tag.type:gmatch('([^%a]?)([%a]+)(.?)') do
+        for m1, m2, m3 in tag.type:gmatch('([^%a]*)([%a]+)(.?)') do
             if typenames[m2] then
                 write(m1 .. '<a href="#' .. m2 .. '">'
                     .. m2 .. '</a>' .. m3)
@@ -236,10 +314,22 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
     Documentation generated by
     <a href="about:blank">RTFM</a>.
 </footer>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/8.0.0/markdown-it.min.js"></script>
-<script>var md = markdownit();
+<script src="<@= cdn @>/markdown-it/8.0.0/markdown-it.min.js"></script>
+<script src="<@= cdn @>/highlight.js/9.7.0/highlight.min.js"></script>
+<script src="<@= cdn @>/highlight.js/9.7.0/languages/lua.min.js"></script>
+<script>var md = markdownit({ html: true, linkify: true,
+    highlight: function (str, lang) {
+        if (lang && hljs.getLanguage(lang))
+            try { return hljs.highlight(lang, str).value; } catch (_) {}
+        return '' }});
+var code_inline = md.renderer.rules.code_inline
+md.renderer.rules.code_inline = function (a,b,c,d,e) {
+    var o = code_inline.call(md.renderer.rules, a,b,c,d,e)
+    if (document.getElementById(a[b].content))
+        return '<a href="#' + a[b].content + '">' + o + '</a>'
+    return o};
 [].slice.apply(document.getElementsByTagName('p')).forEach(
-function (e) { e.outerHTML = md.render(e.innerHTML) })</script>
+function (e) { e.outerHTML = md.render(e.textContent) })</script>
 </body>
 </html>
 ]]
@@ -279,10 +369,86 @@ function rtfm.launch (...)
     generator:run({ select(argIndex, ...) })
 end
 
---- @class Generator  Documentation generator.
 
---- @function Generator.sortTags  Function passed to table.sort.
-local function sortTags (a, b)
+--- @function rtfm.nestDocTag   Default nesting function for regular tags.
+function rtfm.nestDocTag (tag, levels, tags)
+    -- put tag at top of level stack, fill holes, pop unrelated tags 
+    levels[tag.level] = tag
+    for i = 1, tag.level - 1 do
+        levels[i] = levels[i] or false
+    end
+    while #levels > tag.level do
+        levels[#levels] = nil
+    end
+    -- move the tag into the appropriate parent tag (next level down stack) 
+    local parent
+    local level = tag.level - 1
+    while level > 0 and not parent do
+        parent = levels[level]
+        level = level - 1
+    end
+    if parent then
+        tag.parent = parent
+        parent[#parent + 1] = tag
+        return true
+    end
+end
+
+--- @function rtfm.nestEndTag   Default nesting function for end tags.
+function rtfm.nestEndTag (tag, levels, tags)
+    for i = #levels, 1, -1 do
+        if levels[i] and levels[i].id == tag.what then
+            for j = i, #levels do
+                levels[j] = nil
+            end
+            return true
+        end
+    end
+    io.stderr:write('\nMismatched "end" tag on line ' .. tag.line .. '\n')
+    return true
+end
+
+--- @function rtfm.nestMergedTag   Default nesting function for merged tags.
+function rtfm.nestMergedTag (tag, levels, tags)
+    for _, other in ipairs(tags.flat) do
+        if other[tag.merge] == tag[tag.merge]
+        and other.id == tag.id then
+            isMerged = other ~= tag
+            tag = other
+            break
+        end
+    end
+    return rtfm.nestDocTag(tag, levels, tags) or isMerged
+end
+
+--[[--
+@class Generator
+
+Documentation generator.
+
+Configuration files run with the Generator as their environment.
+The first segment of any configuration option, such as `input` or
+`template`, represents a Generator field.
+
+The Generator is also responsible for organizing tags into a tree
+structure after their extraction from input files.
+--]]--
+
+--- @method Generator:nestTags   Nest tags. 
+local function nestTags (self, tags)
+    local levels = {}
+    local i = 0
+    while i < #tags do
+        i = i + 1
+        if tags[i]:nest(levels, tags) then
+            table.remove(tags, i)
+            i = i - 1
+        end
+    end
+end
+
+--- @function Generator.sortFunc  Function passed to `table.sort`.
+local function sortFunc (a, b)
     if a.level ~= b.level then
         return a.level > b.level
     end
@@ -303,69 +469,13 @@ local function sortTags (a, b)
     return a.index < b.index
 end
 
---- @method Generator:nestTags   Nest and sort tags. 
-local function nestTags (self, tags)
-    local levels = {}
-    local i = 0
-    while i < #tags do
-        i = i + 1
-        local tag = tags[i]
-        local isMerged = false
-        if tag.merge then
-            for _, other in ipairs(tags.flat) do
-                if other[tag.merge] == tag[tag.merge]
-                and other.id == tag.id then
-                    isMerged = other ~= tag
-                    tag = other
-                    break
-                end
-            end
-        end
-        if levels[tag.level] then
-            table.sort(levels[tag.level], self.sortTags)
-        end
-        levels[tag.level] = tag
-        for j = 1, tag.level - 1 do
-            levels[j] = levels[j] or false
-        end
-        while #levels > tag.level do
-            if levels[#levels] then
-                table.sort(levels[#levels], self.sortTags)
-            end
-            levels[#levels] = nil
-        end
-        local parent
-        local level = tag.level - 1
-        while level > 0 and not parent do
-            parent = levels[level]
-            level = level - 1
-        end
-        if parent and not isMerged then
-            tag.parent = parent
-            parent[#parent + 1] = tag
-            table.remove(tags, i)
-            i = i - 1
-        elseif isMerged then
-            table.remove(tags, i)
-            i = i - 1
-        end
-    end
-
-    for _, level in ipairs(levels) do
-        if level then
-            table.sort(level, self.sortTags)
-        end
-    end
-
-    table.sort(tags, self.sortTags)
-end
-
---- @method Generator:linkTags   Link tags to next/prevous siblings. 
-local function linkTags (self, tags)
+--- @method Generator:sortTags   Sort nested tags and link them to siblings. 
+local function sortTags (self, tags)
+    table.sort(tags, self.sortFunc)
     for i, tag in ipairs(tags) do
         tag.prev = tags[i - 1]
         tag.next = tags[i + 1]
-        self:linkTags(tag)
+        self:sortTags(tag)
     end
 end
 
@@ -374,7 +484,7 @@ end
 local function run (self, files)
     local tags = self.input:read(files)
     self:nestTags(tags)
-    self:linkTags(tags)
+    self:sortTags(tags)
     self.output:write(self.template:apply(tags))
 end
 
@@ -395,9 +505,9 @@ function rtfm.Generator (configure)
     --- @field {string:TagDef} tag  Tag definitions, keyed by ID.
     generator.tag = CREATE_DEFAULT_TAGDEFS()
     
-    generator.sortTags = sortTags
+    generator.sortFunc = sortFunc
     generator.nestTags = nestTags
-    generator.linkTags = linkTags
+    generator.sortTags = sortTags
     generator.run = run
     
     if configure then
@@ -452,7 +562,7 @@ function rtfm.NodeSet (...)
     return { test = test, match = match, ... }
 end
 
---- @class Template   The default template.
+--- @class Template   Transforms tag data to desired output format.
 
 --- @method Template:applyText   Apply the template.
 --- @param string text   The full text of the template.
@@ -472,7 +582,9 @@ local function applyText (self, text, tags)
     local func, reason = loadstring(source)
     if func then
         local buffer = {}
-        func(self, tags,
+        func(
+            self, 
+            tags,
             function (text) buffer[#buffer + 1] = text end,
             function (...) return self:define(...) end,
             function (...) return self:delegate(false, ...) end,
@@ -573,7 +685,8 @@ end
 
 --- @method Reader:parseLine  Parse a line from a source file.
 --- @param string line   Line of text to parse.
-local function parseLine (self, line)
+--- @param number lineNumber   Line number.
+local function parseLine (self, line, lineNumber)
     local tags = self.tags
     local lastTag = tags[#tags]
     local column, _, id, data = line:find(self.sigil .. '([^%s]+)%s*(.*)')
@@ -594,6 +707,7 @@ local function parseLine (self, line)
         tags[#tags + 1] = tag
         tags.flat[#tags.flat + 1] = tag
         tag.index = #tags
+        tag.line = lineNumber
         tag.column = column
         tag.data = data
         tag.id = id
@@ -617,12 +731,14 @@ end
 local function parseFile (self, name)
     local file = io.open(name)
     local inBlock = false
+    local n = 0
     for line in file:lines() do
+        n = n + 1
         if line:find(self.blockEndPattern) then -- found end of block
             inBlock = false
         end
         if inBlock or line:find(self.linePattern) then -- in block or line
-            self:parseLine(line)
+            self:parseLine(line, n)
         end
         if line:find(self.blockStartPattern) then -- found start of block
             inBlock = true
@@ -654,7 +770,7 @@ function rtfm.Reader (generator)
     --- @field string blockStartPattern   Matches the start of a docblock.
     reader.blockStartPattern = '%-%-%[=*%[%-%-+'
     --- @field string blockEndPattern   Matches the end of a docblock.
-    reader.blockEndPattern = '%-*%]=*%]'
+    reader.blockEndPattern = '%-%-+%]=*%]'
     --- @field string linePattern   Matches a line with a docblock.
     reader.linePattern = '%-%-%-'
     
@@ -695,16 +811,3 @@ if arg and arg[0] and arg[0]:find('rtfm.lua$') then
 end
 
 return rtfm
-
---[[--
-@type TagDef
-
-@field number level     Tag level. Lower levels are parents of higher levels.
-@field number group     Group priority level. Lower groups come first.
-@field string sort      The name of a field to sort by after grouping.
-@field string pattern   Matching pattern. Captures are inserted into fields.
-@field string fields    Comma-delimited list of fields to populate from pattern.
-@field string alias     The name of another `self.tag` to inherit from.
-@field string title     A name to display in the template for this tag.
-@field boolean parametric   Whether to display a parameter list overview.
---]]--
