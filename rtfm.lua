@@ -1,6 +1,9 @@
 --[=[--
 @module rtfm   Read the fucking manual.
 
+#### Example use:
+    lua rtfm.lua --template.title='My API Docs' myapi.lua > mydocs.html
+
 @env Configuration Environment
 
 This script can be configured by command switches and a config file.
@@ -22,6 +25,8 @@ The configuration environment runs as an instance of `Generator`;
 all members can be accessed as locals. This allows almost every
 aspect of RTFM to be configured; even core functionality can be
 monkey-patched from the config file.
+
+@see Generator
 
 @env Custom Template Environment
 
@@ -95,8 +100,7 @@ local CREATE_DEFAULT_TAGDEFS = function ()
         ['script'] = { alias = 'file',
             title = 'Scripts', group = 13 },
         ['type'] = { level = 2, group = 29, title = 'Types',
-            pattern = ONE_WORD, fields = 'typename,info', sort = 'typename',
-            nest = rtfm.nestDocTag },
+            pattern = ONE_WORD, fields = 'typename,info', sort = 'typename', },
         ['env'] = { alias = 'type',
             pattern = ALL, title = 'Contexts', group = 21 },
         ['class'] = { alias = 'type',
@@ -108,11 +112,10 @@ local CREATE_DEFAULT_TAGDEFS = function ()
         ['interface'] = { alias = 'type',
             title = 'Interfaces', group = 25 },
         ['field'] = { level = 3, group = 31, title = 'Fields',
-            pattern = TWO_WORD, fields = 'type,name,info', sort = 'name',
-            nest = rtfm.nestDocTag },
+            pattern = TWO_WORD, fields = 'type,name,info', sort = 'name', },
         ['function'] = { level = 3, group = 33, title = 'Functions',
             pattern = ONE_WORD, fields = 'typename,info', sort = 'typename',
-            parametric = true, nest = rtfm.nestDocTag },
+            parametric = true,  },
         ['constructor'] = { alias = 'function',
             title = 'Constructors', group = 32 },
         ['method'] = { alias = 'function',
@@ -122,37 +125,153 @@ local CREATE_DEFAULT_TAGDEFS = function ()
         ['continue'] = { alias = 'function',
             title = 'Continuations', group = 36 },
         ['param'] = { level = 4, title = 'Arguments',
-            pattern = TWO_WORD, fields = 'type,name,info',
-            nest = rtfm.nestDocTag },
+            pattern = TWO_WORD, fields = 'type,name,info', },
         ['return'] = { level = 4, title = 'Returns',
-            pattern = ONE_WORD, fields = 'type,info',
-            nest = rtfm.nestDocTag },
+            pattern = ONE_WORD, fields = 'type,info', },
         ['unknown'] = { level = 4, pattern = TWO_WORD,
-            fields = 'type,name,info', nest = rtfm.nestDocTag },
+            fields = 'type,name,info',  },
         ['end'] = { pattern = ALL, fields = 'what',
             nest = rtfm.nestEndTag },
     }
 end
 
-local DEFAULT_TEMPLATE = [[<!doctype html>
+local DEFAULT_TEMPLATE = [[
+<%
+    local idMap = {}
+    local typenames = {}
+
+    for _, tag in ipairs(tags.flat) do
+        if tag.typename then typenames[tag.typename] = tag end
+    end
+
+    local primitives = { ['nil'] = true, ['number'] = true,
+        ['string'] = true, ['boolean'] = true, ['table'] = true,
+        ['function'] = true, ['thread'] = true, ['userdata'] = true }
+%>
+
+<% define('list', 'name', function (tag) %>
+    <%= tag.name %>
+<% end) %>
+
+<% define('list', 'name and prev and prev.id == id', function (tag) %>
+    , <%= ' ' .. tag.name %>
+<% end) %>
+
+<% define('overview', 'typename', function (tag) %>
+    <li class="<% descend(tag, 'vis') %>">
+        <a href="#<%= tag.typename %>"><%= tag.typename %></a>
+        <p><%= tag.info:gsub('%..*', '.') %></p>
+        <ul><% descend(tag, 'overview') %></ul>
+    </li>
+<% end) %>
+
+<% define('type', 'type', function (tag) %>
+    <span class="type">
+    <% 
+        for m1, m2, m3 in tag.type:gmatch('([^%a]*)([%a]+)(.?)') do
+            if typenames[m2] then
+                write(m1 .. '<a href="#' .. m2 .. '">'
+                    .. m2 .. '</a>' .. m3)
+            elseif primitives[m2] then
+                write(m1 .. '<span class="primitive">'
+                    .. m2 .. '</span>' .. m3)
+            else
+                write(m1 .. '<span class="unknown">'
+                    .. m2 .. '</span>' .. m3)
+            end
+        end
+    %>
+    </span>
+<% end) %>
+
+<% define('typename', 'typename', function (tag) %>
+    <%
+        local id = ''
+        if not idMap[tag.typename] and tag.level < 4 then
+            id = ' id="' .. tag.typename .. '"'
+            idMap[tag.typename] = tag
+        end
+        write('<b' .. id .. '>' .. tag.typename .. '</b> ')
+    %>
+<% end) %>
+
+<% define('link', 'type', function (tag) %>
+    <% defer(tag, 'type') %>
+<% end) %>
+
+<% define('link', 'type and name', function (tag) %>
+    <% defer(tag, 'type') %>
+    <b><%= ' ' .. tag.name %></b>
+<% end) %>
+
+<% define('link', 'typename', function (tag) %>
+    <% defer(tag, 'typename') %>
+<% end) %>
+
+<% define('link', 'typename and parametric', function (tag) %>
+    <% defer(tag, 'typename') %>
+    (<% descend(tag, 'list', 'id=="param"') %>)
+<% end) %>
+
+<% define('visibility', 'id == "private"', function (tag) %>
+    private <%= ' ' %>
+<% end) %>
+
+<% define('article', function (tag) %>
+    <article class="<% descend(tag, 'visibility') %><%= tag.id %>">
+        <% if tag.type or tag.typename then %>
+            <h<%= tag.level + 1 %>>
+                <% defer(tag, 'link') %>
+            </h<%= tag.level + 1 %>>
+        <% end %>
+        <div>
+            <p><%= tag.info %></p>
+            <% descend(tag, 'main') %>
+        </div>
+    </article>
+<% end) %>
+
+<% define('main', 'not hidden', function (tag) %>
+    <% defer(tag, 'article') %>
+<% end) %>
+
+<% define('main', '(prev and prev.id) ~= id and not hidden', function (tag) %>
+    <section>
+        <h<%= tag.level + 1 %>>
+            <%= tag.title or tag.id %>
+        </h<%= tag.level + 1 %>>
+        <% defer(tag, 'article') %>
+    </section>
+<% end) %>
+
+<% define('main', 'level == 1 and not hidden', function (tag) %>
+    <section>
+        <% defer(tag, 'article') %>
+    </section>
+<% end) %>
+
+<!doctype html>
 <html><head><meta charset="utf-8">
-<title><@= self.title @></title>
-<@ local cdn = 'https://cdnjs.cloudflare.com/ajax/libs' @>
+<title><%= self.title %></title>
+<% local cdn = 'https://cdnjs.cloudflare.com/ajax/libs' %>
 <link rel="stylesheet"
-    href="<@= cdn @>/highlight.js/9.7.0/styles/default.min.css">
+    href="<%= cdn %>/highlight.js/9.7.0/styles/default.min.css">
 <style>
 html, body { background-color:#666; color:#333; font-size:12px;
     margin:0; padding:0; font-family:Lucida Grande, Lucida Sans Unicode,
     Lucida Sans, Geneva, Verdana, Bitstream Vera Sans, sans-serif; }
 code { font-family:Lucida Console, Lucida Sans Typewriter, monaco,
     Bitstream Vera Sans Mono, monospace; }
+header { background: #333; color:#666; margin-bottom:-80px;
+    padding:40px 0px 120px calc(50% - 300px); box-shadow:0px 0px 128px #fff; }
+header form label:hover { color:#ccc; text-decoration: underline; }
 body > div, body > section > article { max-width:600px; padding:40px;
     margin:auto; background:#f8f8f8; box-shadow:0px 0px 26px #000; }
 body > section > article + article, body > div + section > article {
     margin:100px auto; }
 h1, h2, h3, h4, h5, h6, p { font-weight:normal; font-size:12px;
     margin:0; padding:0; }
-h1 { color:#666; font-size:150%; margin:0; padding:0; border:none; }
+h1 { color:#666; font-size:250%; margin:0; padding:0; border:none; }
 section > h2 { display:none; }
 section > h3 { display:none; }
 section > h4 { color:#aaa; font-style:italic; font-size:130%; margin:8px 0; }
@@ -184,140 +303,40 @@ footer a { color:#fff; font-weight:bold; text-decoration:underline; }
 .unknown { color: #c39; }
 .primitive { color: #999; }
 </style></head><body>
-<@
-    local idMap = {}
-    local typenames = {}
 
-    for _, tag in ipairs(tags.flat) do
-        if tag.typename then typenames[tag.typename] = tag end
-    end
-
-    local primitives = { ['nil'] = true, ['number'] = true,
-        ['string'] = true, ['boolean'] = true, ['table'] = true,
-        ['function'] = true, ['thread'] = true, ['userdata'] = true }
-@>
-
-<@ define('list', 'name', function (tag) @>
-    <@= tag.name @>
-<@ end) @>
-
-<@ define('list', 'name and prev and prev.id == id', function (tag) @>
-    , <@= ' ' .. tag.name @>
-<@ end) @>
-
-<@ define('overview', 'typename', function (tag) @>
-    <li>
-        <a href="#<@= tag.typename @>"><@= tag.typename @></a>
-        <p><@= tag.info:gsub('%..*', '.') @></p>
-        <ul><@ descend(tag, 'overview') @></ul>
-    </li>
-<@ end) @>
-
-<@ define('type', 'type', function (tag) @>
-    <span class="type">
-    <@ 
-        for m1, m2, m3 in tag.type:gmatch('([^%a]*)([%a]+)(.?)') do
-            if typenames[m2] then
-                write(m1 .. '<a href="#' .. m2 .. '">'
-                    .. m2 .. '</a>' .. m3)
-            elseif primitives[m2] then
-                write(m1 .. '<span class="primitive">'
-                    .. m2 .. '</span>' .. m3)
-            else
-                write(m1 .. '<span class="unknown">'
-                    .. m2 .. '</span>' .. m3)
-            end
-        end
-    @>
-    </span>
-<@ end) @>
-
-<@ define('typename', 'typename', function (tag) @>
-    <@
-        local id = ''
-        if not idMap[tag.typename] and tag.level < 4 then
-            id = ' id="' .. tag.typename .. '"'
-            idMap[tag.typename] = tag
-        end
-        write('<b' .. id .. '>' .. tag.typename .. '</b> ')
-    @>
-<@ end) @>
-
-<@ define('link', 'type', function (tag) @>
-    <@ defer(tag, 'type') @>
-<@ end) @>
-
-<@ define('link', 'type and name', function (tag) @>
-    <@ defer(tag, 'type') @>
-    <b><@= ' ' .. tag.name @></b>
-<@ end) @>
-
-<@ define('link', 'typename', function (tag) @>
-    <@ defer(tag, 'typename') @>
-<@ end) @>
-
-<@ define('link', 'typename and parametric', function (tag) @>
-    <@ defer(tag, 'typename') @>
-    (<@ descend(tag, 'list', 'id=="param"') @>)
-<@ end) @>
-
-<@ define('article', function (tag) @>
-    <article>
-        <@ if tag.type or tag.typename then @>
-            <h<@= tag.level + 1 @>>
-                <@ defer(tag, 'link') @>
-            </h<@= tag.level + 1 @>>
-        <@ end @>
-        <div>
-            <@ if tag.note then @><p><@= tag.note @></p><@ end @>
-            <@ if tag.code then @>
-                <pre><code><@= tag.info @></code></pre>
-            <@ else @>
-                <p><@= tag.info @></p>
-            <@ end @>
-            <@ descend(tag, 'main') @>
-        </div>
-    </article>
-<@ end) @>
-
-<@ define('main', 'not hidden', function (tag) @>
-    <@ defer(tag, 'article') @>
-<@ end) @>
-
-<@ define('main', '(prev and prev.id) ~= id and not hidden', function (tag) @>
-    <section>
-        <h<@= tag.level + 1 @>>
-            <@= tag.title or tag.id @>
-        </h<@= tag.level + 1 @>>
-        <@ defer(tag, 'article') @>
-    </section>
-<@ end) @>
-
-<@ define('main', 'level == 1 and not hidden', function (tag) @>
-    <section>
-        <@ defer(tag, 'article') @>
-    </section>
-<@ end) @>
-
-<@ if self.overview then @>
+<header>
+    <h1><%= self.title %></h1>
+    <form autocomplete="off">
+        <label><input type="checkbox"
+            name="rtfmPrivateToggle">Show private</label>
+    </form>
+</header>
+    
+<% if self.overview then %>
     <div>
-        <h1><@= self.title @></h1>
-        <nav><h3>Table of Contents</h3>
-        <ul><@ descend(tags, 'overview') @></ul>
+        <nav><h2>Table of Contents</h2>
+        <ul><% descend(tags, 'overview') %></ul>
         </nav>
     </div>
-<@ end @>
+<% end %>
 
-<@ descend(tags, 'main') @>
+<% descend(tags, 'main') %>
 
 <footer>
     Documentation generated by
     <a href="about:blank">RTFM</a>.
 </footer>
-<script src="<@= cdn @>/markdown-it/8.0.0/markdown-it.min.js"></script>
-<script src="<@= cdn @>/highlight.js/9.7.0/highlight.min.js"></script>
-<script src="<@= cdn @>/highlight.js/9.7.0/languages/lua.min.js"></script>
-<script>var md = markdownit({ html: true, linkify: true,
+<script src="<%= cdn %>/markdown-it/8.0.0/markdown-it.min.js"></script>
+<script src="<%= cdn %>/highlight.js/9.7.0/highlight.min.js"></script>
+<script src="<%= cdn %>/highlight.js/9.7.0/languages/lua.min.js"></script>
+<script>
+function togglePrivate () {
+    var toggle = this;
+    [].slice.apply(document.getElementsByClassName('private')).forEach(
+        function (e) { e.style.display = toggle.checked ? null : 'none'; }); }
+document.forms[0].rtfmPrivateToggle.onchange = togglePrivate;
+togglePrivate();
+var md = markdownit({ html: true, linkify: true,
     highlight: function (str, lang) {
         if (lang && hljs.getLanguage(lang))
             try { return hljs.highlight(lang, str).value; } catch (_) {}
@@ -371,6 +390,7 @@ end
 
 
 --- @function rtfm.nestDocTag   Default nesting function for regular tags.
+--- @private
 function rtfm.nestDocTag (tag, levels, tags)
     -- put tag at top of level stack, fill holes, pop unrelated tags 
     levels[tag.level] = tag
@@ -395,6 +415,7 @@ function rtfm.nestDocTag (tag, levels, tags)
 end
 
 --- @function rtfm.nestEndTag   Default nesting function for end tags.
+--- @private
 function rtfm.nestEndTag (tag, levels, tags)
     for i = #levels, 1, -1 do
         if levels[i] and levels[i].id == tag.what then
@@ -409,6 +430,7 @@ function rtfm.nestEndTag (tag, levels, tags)
 end
 
 --- @function rtfm.nestMergedTag   Default nesting function for merged tags.
+--- @private
 function rtfm.nestMergedTag (tag, levels, tags)
     for _, other in ipairs(tags.flat) do
         if other[tag.merge] == tag[tag.merge]
@@ -437,12 +459,12 @@ structure after their extraction from input files.
 --- @method Generator:nestTags   Nest tags. 
 local function nestTags (self, tags)
     local levels = {}
-    local i = 0
-    while i < #tags do
-        i = i + 1
-        if tags[i]:nest(levels, tags) then
+    local i = 1
+    while i <= #tags do
+        if (tags[i].nest or rtfm.nestDocTag)(tags[i], levels, tags) then
             table.remove(tags, i)
-            i = i - 1
+        else
+            i = i + 1
         end
     end
 end
@@ -523,6 +545,7 @@ function rtfm.Generator (configure)
 end
 
 --- @class NodeSet  Internal template transformation helper.
+--- @private
 
 --- @method NodeSet:test   Test a node to see if it meets a condition.
 --- @param table node   The node to test.
@@ -665,9 +688,9 @@ function rtfm.Template ()
     --- @field boolean overview   Whether to display an API overview.
     template.overview = true
     --- @field string escapePattern   Pattern to escape Lua code.
-    template.escapePattern = '<@(.-)@>'
+    template.escapePattern = '<%%(.-)%%>'
     --- @field string outputPattern   Pattern to output results of expressions.
-    template.outputPattern = '<@=(.-)@>'
+    template.outputPattern = '<%%=(.-)%%>'
     --- @field boolean condense   Eliminate whitespace around escape sequences.
     --- Whitespace may be explicitly written with `write` or `outputPattern`. 
     template.condense = true
